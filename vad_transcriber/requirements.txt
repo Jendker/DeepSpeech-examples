@@ -1,3 +1,4 @@
-deepspeech==0.6.0
+deepspeech==0.6.1
 webrtcvad
-pyqt5
+# pyqt5
+pydub

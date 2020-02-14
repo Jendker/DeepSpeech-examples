@@ -21,6 +21,9 @@ def main(args):
                         help='Path to directory that contains all model files (output_graph, lm and trie)')
     parser.add_argument('--stream', required=False, action='store_true',
                         help='To use deepspeech streaming interface')
+    parser.add_argument('--normalize', dest='normalize', action='store_true')
+    parser.add_argument('--no_normalize', dest='normalize', action='store_false')
+    parser.set_defaults(normalize=True)
     args = parser.parse_args()
     if args.stream is True:
         print("Opening mic for streaming")
@@ -48,7 +51,8 @@ def main(args):
         # Run VAD on the input file
         waveFile = args.audio
         segments, sample_rate, audio_length = wavTranscriber.vad_segment_generator(waveFile, args.aggressive,
-                                                                                   model_sample_rate=model_retval[3])
+                                                                                   model_sample_rate=model_retval[3],
+                                                                                   normalize=args.normalize)
         f = open(waveFile.rstrip(".wav") + ".txt", 'w')
         logging.debug("Saving Transcript @: %s" % waveFile.rstrip(".wav") + ".txt")
 

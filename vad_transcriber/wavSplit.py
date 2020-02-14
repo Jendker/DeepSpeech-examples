@@ -1,22 +1,41 @@
 import collections
 import contextlib
+import shlex
+import subprocess
 import wave
+import numpy as np
 
 
-def read_wave(path):
+def get_first_channel(audio_path):
+    channel_string = ''
+    sox_cmd = 'sox {} --type raw --bits 16 --channels 1 --encoding signed-integer --endian little --compression 0.0 --no-dither - remix 1'.format(
+        shlex.quote(audio_path)) + channel_string
+    try:
+        output = subprocess.check_output(shlex.split(sox_cmd), stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError('SoX returned non-zero status: {}'.format(e.stderr))
+    except OSError as e:
+        raise OSError(e.errno, 'SoX not found.')
+
+    return np.frombuffer(output, np.int16)
+
+
+def read_wave(path, model_sample_rate):
     """Reads a .wav file.
 
     Takes the path, and returns (PCM audio data, sample rate).
     """
     with contextlib.closing(wave.open(path, 'rb')) as wf:
-        num_channels = wf.getnchannels()
-        assert num_channels == 1
         sample_width = wf.getsampwidth()
         assert sample_width == 2
         sample_rate = wf.getframerate()
-        assert sample_rate in (8000, 16000, 32000)
+        assert sample_rate == model_sample_rate
         frames = wf.getnframes()
-        pcm_data = wf.readframes(frames)
+        num_channels = wf.getnchannels()
+        if num_channels > 1:
+            pcm_data = get_first_channel(path)
+        else:
+            pcm_data = np.frombuffer(wf.readframes(frames), np.int16)
         duration = frames / sample_rate
         return pcm_data, sample_rate, duration
 

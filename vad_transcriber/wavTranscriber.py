@@ -1,9 +1,11 @@
 import glob
+import numpy as np
 import webrtcvad
 import logging
 import wavSplit
 from deepspeech import Model
 from timeit import default_timer as timer
+from pydub import AudioSegment
 
 '''
 Load the pre-trained model into the memory
@@ -88,14 +90,22 @@ Returns tuple of
     audio_length: Duraton of the input audio file
 
 '''
-def vad_segment_generator(wavFile, aggressiveness, model_sample_rate):
+def vad_segment_generator(wavFile, aggressiveness, model_sample_rate, normalize):
     logging.debug("Caught the wav file @: %s" % (wavFile))
-    audio, sample_rate, audio_length = wavSplit.read_wave(wavFile)
+    audio, sample_rate, audio_length = wavSplit.read_wave(wavFile, model_sample_rate)
     assert sample_rate == model_sample_rate, \
         "Audio sample rate must match sample rate of used model: {}Hz".format(model_sample_rate)
+    if normalize:
+        def match_target_amplitude(sound, target_dBFS):
+            change_in_dBFS = target_dBFS - sound.dBFS
+            return sound.apply_gain(change_in_dBFS)
+
+        print("Normalizing audio file.")
+        sound = AudioSegment(audio.tobytes(), frame_rate=model_sample_rate, channels=1, sample_width=2)
+        normalized_sound = match_target_amplitude(sound, -18.0)
+        audio = np.frombuffer(normalized_sound.raw_data, dtype=np.int16)
     vad = webrtcvad.Vad(int(aggressiveness))
-    frames = wavSplit.frame_generator(30, audio, sample_rate)
-    frames = list(frames)
+    frames = wavSplit.frame_generator(30, audio.tobytes(), sample_rate)
     segments = wavSplit.vad_collector(sample_rate, 30, 300, vad, frames)
 
     return segments, sample_rate, audio_length
