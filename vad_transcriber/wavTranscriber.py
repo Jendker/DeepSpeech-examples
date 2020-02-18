@@ -100,7 +100,7 @@ def vad_segment_generator(wavFile, aggressiveness, model_sample_rate, normalize)
             change_in_dBFS = target_dBFS - sound.dBFS
             return sound.apply_gain(change_in_dBFS)
 
-        print("Normalizing audio file.")
+        logging.debug("Normalizing audio file.")
         sound = AudioSegment(audio.tobytes(), frame_rate=model_sample_rate, channels=1, sample_width=2)
         normalized_sound = match_target_amplitude(sound, -18.0)
         audio = np.frombuffer(normalized_sound.raw_data, dtype=np.int16)

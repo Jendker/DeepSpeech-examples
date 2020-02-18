@@ -1,4 +1,5 @@
 import argparse
+import csv
 import os
 import gzip
 import shutil
@@ -24,7 +25,7 @@ def parse_folder(source_path, target_path, target_duration):
             total_length += parse_file(file_to_download, target_path)
             if total_length >= target_duration:
                 break
-    print("Finished download. Downloaded", target_duration, "seconds of audio in folder:", target_path)
+    print("Finished download. Downloaded", total_length, "seconds of audio in folder:", target_path)
 
 
 def parse_file(file_path, target_path):
@@ -63,6 +64,21 @@ def parse_file(file_path, target_path):
     return total_duration
 
 
+def create_csv_file(target_path):
+    files = os.listdir(target_path)
+    filenames = []
+    for file in files:
+        if '.wav' in file:
+            filenames.append(file)
+    with open(os.path.join(target_path, 'files.csv'), 'w', newline='') as csvfile:
+        fieldnames = ['filename']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+        writer.writeheader()
+        for filename in filenames:
+            writer.writerow({'filename': os.path.join(target_path, filename)})
+
+
 def main():
     parser = argparse.ArgumentParser(description='Download eml files of given duration')
     parser.add_argument('--input_path', required=True, type=str,
@@ -86,6 +102,7 @@ def main():
                 exit(0)
     print("Downloading files.")
     parse_folder(args.input_path, args.target_path, args.target_duration)
+    create_csv_file(args.target_path)
 
 
 if __name__ == "__main__":

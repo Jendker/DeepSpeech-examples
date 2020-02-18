@@ -2,3 +2,4 @@ deepspeech==0.6.1
 webrtcvad
 # pyqt5
 pydub
+wget
