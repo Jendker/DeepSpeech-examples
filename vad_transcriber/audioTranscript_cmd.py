@@ -1,3 +1,4 @@
+import shutil
 import sys
 import os
 import logging
@@ -6,6 +7,7 @@ import subprocess
 import shlex
 import numpy as np
 import wavTranscriber
+import wave
 
 # Debug helpers
 logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
@@ -23,6 +25,7 @@ def main(args):
                         help='To use deepspeech streaming interface')
     parser.add_argument('--normalize', dest='normalize', action='store_true')
     parser.add_argument('--no_normalize', dest='normalize', action='store_false')
+    parser.add_argument('--save_segments', action='store_true')
     parser.set_defaults(normalize=True)
     args = parser.parse_args()
     if args.stream is True:
@@ -56,9 +59,19 @@ def main(args):
         f = open(waveFile.rstrip(".wav") + ".txt", 'w')
         logging.debug("Saving Transcript @: %s" % waveFile.rstrip(".wav") + ".txt")
 
+        if args.save_segments:
+            if os.path.isdir("chunks"):
+                shutil.rmtree("chunks")
+            os.mkdir("chunks")
         for i, segment in enumerate(segments):
             # Run deepspeech on the chunk that just completed VAD
             logging.debug("Processing chunk %002d" % (i,))
+            if args.save_segments:
+                with wave.open("chunks/chunk{}.wav".format(i), 'wb') as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(model_retval[3])
+                    wf.writeframes(segment)
             audio = np.frombuffer(segment, dtype=np.int16)
             output = wavTranscriber.stt(model_retval[0], audio, sample_rate)
             inference_time += output[1]
