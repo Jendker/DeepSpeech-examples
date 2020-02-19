@@ -19,9 +19,9 @@ def parse_length(audio_csv_file):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Download eml files of given duration')
+    parser = argparse.ArgumentParser(description='Check length of data from DeepSpeech csv file')
     parser.add_argument('--input_path', required=True, type=str,
-                        help='Source folder with EML XML files')
+                        help='Source csv file from DeepSpeech')
     args = parser.parse_args()
     print("Total length:", parse_length(args.input_path), "seconds")
 

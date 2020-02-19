@@ -23,6 +23,10 @@ def main(args):
                         help='Path to directory that contains all model files (output_graph, lm and trie)')
     parser.add_argument('--stream', required=False, action='store_true',
                         help='To use deepspeech streaming interface')
+    parser.add_argument('--lm', required=False,
+                        help='Path to the language model binary file')
+    parser.add_argument('--trie', required=False,
+                        help='Path to the language model trie file created with native_client/generate_trie')
     parser.add_argument('--normalize', dest='normalize', action='store_true')
     parser.add_argument('--no_normalize', dest='normalize', action='store_false')
     parser.add_argument('--save_segments', action='store_true')
@@ -40,7 +44,17 @@ def main(args):
     dirName = os.path.expanduser(args.model)
 
     # Resolve all the paths of model files
-    output_graph, lm, trie = wavTranscriber.resolve_models(dirName)
+    lm = None
+    trie = None
+    if args.lm or args.trie:
+        lm = args.lm
+        print("LM:", lm)
+        trie = args.trie
+        print("trie:", trie)
+        output_graph = args.model
+        print("model:", output_graph)
+    else:
+        output_graph, lm, trie = wavTranscriber.resolve_models(dirName)
 
     # Load output_graph, alpahbet, lm and trie
     model_retval = wavTranscriber.load_model(output_graph, lm, trie)
