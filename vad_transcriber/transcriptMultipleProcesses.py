@@ -22,6 +22,21 @@ LM_BETA = 1.85
 logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
 
 
+def process_audio_file(audio_path, ds, aggressive, normalize):
+    segments, sample_rate, audio_length = wavTranscriber.vad_segment_generator(audio_path, aggressive,
+                                                                               model_sample_rate=ds.sampleRate(),
+                                                                               normalize=normalize)
+    full_text = []
+    for i, segment in enumerate(segments):
+        # Run deepspeech on the chunk that just completed VAD
+        logging.debug("Processing chunk %002d" % (i,))
+        audio = np.frombuffer(segment, dtype=np.int16)
+        output = ds.stt(audio)
+        logging.debug("Transcript: %s" % output)
+        full_text += output + " "
+    return full_text
+
+
 def chunkIt(seq, num):
     avg = len(seq) / float(num)
     out = []
@@ -34,33 +49,22 @@ def chunkIt(seq, num):
     return out
 
 
-def worker_pool(model, lm, trie, gpu_mask, aggressive, normalize, filenames):
+def pool_worker(model, lm, trie, gpu_mask, aggressive, normalize, file_paths):
     os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_mask)
     ds = Model(model, BEAM_WIDTH)
     ds.enableDecoderWithLM(lm, trie, LM_ALPHA, LM_BETA)
     all_files_output = []
 
-    for filename in filenames:
+    for file_path in file_paths:
         try:
-            wavname = os.path.splitext(os.path.basename(filename))[0]
-            segments, sample_rate, audio_length = wavTranscriber.vad_segment_generator(filename, aggressive,
-                                                                                       model_sample_rate=ds.sampleRate(),
-                                                                                       normalize=normalize)
-            output_full = ''
-            for i, segment in enumerate(segments):
-                # Run deepspeech on the chunk that just completed VAD
-                logging.debug("Processing chunk %002d" % (i,))
-                audio = np.frombuffer(segment, dtype=np.int16)
-                output = ds.stt(audio)
-
-                output_full += output + " "
-
-            all_files_output.append({'wav': wavname, 'prediction': output_full})
+            prediction = process_audio_file(file_path, ds, aggressive, normalize)
+            wavname = os.path.splitext(os.path.basename(file_path))[0]
+            all_files_output.append({'wav': wavname, 'prediction': prediction})
         except FileNotFoundError as ex:
             print('FileNotFoundError: ', ex)
 
 
-def worker(model, lm, trie, queue_in, queue_out, gpu_mask, aggressive, normalize):
+def proc_worker(model, lm, trie, queue_in, queue_out, gpu_mask, aggressive, normalize):
     os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_mask)
     ds = Model(model, BEAM_WIDTH)
     ds.enableDecoderWithLM(lm, trie, LM_ALPHA, LM_BETA)
@@ -69,21 +73,10 @@ def worker(model, lm, trie, queue_in, queue_out, gpu_mask, aggressive, normalize
         try:
             msg = queue_in.get()
 
-            filename = msg['filename']
-            wavname = os.path.splitext(os.path.basename(filename))[0]
-            segments, sample_rate, audio_length = wavTranscriber.vad_segment_generator(filename, aggressive,
-                                                                                       model_sample_rate=ds.sampleRate(),
-                                                                                       normalize=normalize)
-            output_full = ''
-            for i, segment in enumerate(segments):
-                # Run deepspeech on the chunk that just completed VAD
-                logging.debug("Processing chunk %002d" % (i,))
-                audio = np.frombuffer(segment, dtype=np.int16)
-                output = ds.stt(audio)
-
-                output_full += output + " "
-
-            queue_out.put({'wav': wavname, 'prediction': output_full})
+            file_path = msg['filename']
+            prediction = process_audio_file(file_path, ds, aggressive, normalize)
+            wavname = os.path.splitext(os.path.basename(file_path))[0]
+            queue_out.put({'wav': wavname, 'prediction': prediction})
         except FileNotFoundError as ex:
             print('FileNotFoundError: ', ex)
 
@@ -107,7 +100,8 @@ def main():
                         help='Number of processes to spawn, defaulting to number of CPUs')
     parser.add_argument('--normalize', dest='normalize', action='store_true')
     parser.add_argument('--no_normalize', dest='normalize', action='store_false')
-    parser.add_argument('--pool', action='store_true')
+    parser.add_argument('--pool', action='store_true',
+                        help='Use subprocess pool instead of process spawning. There is no big difference between both.')
     parser.set_defaults(normalize=True)
     args = parser.parse_args()
 
@@ -129,7 +123,7 @@ def main():
             workers_arguments = []
             for index, process_filenames in enumerate(split_filenames):
                     workers_arguments.append((args.model, args.lm, args.trie, index, args.aggressive, args.normalize, process_filenames))
-            transcripts = pool.starmap(worker_pool, workers_arguments)
+            transcripts = pool.starmap(pool_worker, workers_arguments)
             print('\nTotally %d wav file transcripted' % len(transcripts))
     else:
         print("Spawning processes.")
@@ -139,8 +133,8 @@ def main():
 
         processes = []
         for i in range(args.proc):
-            worker_process = Process(target=worker, args=(args.model, args.lm, args.trie, work_todo, work_done, i,
-                                                          args.aggressive, args.normalize),
+            worker_process = Process(target=proc_worker, args=(args.model, args.lm, args.trie, work_todo, work_done, i,
+                                                               args.aggressive, args.normalize),
                                      daemon=True, name='worker_process_{}'.format(i))
             worker_process.start()  # Launch reader() as a separate python process
             processes.append(worker_process)
