@@ -30,6 +30,7 @@ def main(args):
     parser.add_argument('--normalize', dest='normalize', action='store_true')
     parser.add_argument('--no_normalize', dest='normalize', action='store_false')
     parser.add_argument('--save_segments', action='store_true')
+    parser.add_argument('--save_without_pause', action='store_true')
     parser.set_defaults(normalize=True)
     args = parser.parse_args()
     if args.stream is True:
@@ -92,6 +93,17 @@ def main(args):
             logging.debug("Transcript: %s" % output[0])
 
             f.write(output[0] + " ")
+
+        if args.save_without_pause:
+            whole_audio = segments[0]
+            for segment in segments[1:]:
+                whole_audio.append(segment)
+            new_audio_file = waveFile.rstrip(".wav") + "_no_pause.wav"
+            with wave.open(new_audio_file, 'wb') as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(model_retval[3])
+                wf.writeframes(whole_audio)
 
         # Summary of the files processed
         f.close()
