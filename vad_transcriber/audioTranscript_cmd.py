@@ -10,11 +10,13 @@ import wavTranscriber
 import wave
 
 # Debug helpers
+from utils import parse_clean_eml_file, download_audio
+
 logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
 
 
 def main(args):
-    parser = argparse.ArgumentParser(description='Transcribe long audio files using webRTC VAD or use the streaming interface')
+    parser = argparse.ArgumentParser(description='Transcribe long audio files using webRTC VAD')
     parser.add_argument('--aggressive', type=int, choices=range(4), required=False,
                         help='Determines how aggressive filtering out non-speech is. (Interger between 0-3)')
     parser.add_argument('--audio', required=False,
@@ -30,23 +32,14 @@ def main(args):
     parser.add_argument('--normalize', dest='normalize', action='store_true')
     parser.add_argument('--no_normalize', dest='normalize', action='store_false')
     parser.add_argument('--save_segments', action='store_true')
-    parser.add_argument('--save_without_pause', action='store_true')
+    parser.add_argument('--save_without_pause', '--save_vad', action='store_true')
+    parser.add_argument('--eml_file', type=str)
     parser.set_defaults(normalize=True)
     args = parser.parse_args()
-    if args.stream is True:
-        print("Opening mic for streaming")
-    elif args.audio is not None:
-        logging.debug("Transcribing audio file @ %s" % args.audio)
-    else:
-        parser.print_help()
-        parser.exit()
-
     # Point to a path containing the pre-trained models & resolve ~ if used
     dirName = os.path.expanduser(args.model)
 
     # Resolve all the paths of model files
-    lm = None
-    trie = None
     if args.lm or args.trie:
         lm = args.lm
         print("LM:", lm)
@@ -60,24 +53,59 @@ def main(args):
     # Load output_graph, alpahbet, lm and trie
     model_retval = wavTranscriber.load_model(output_graph, lm, trie)
 
-    if args.audio is not None:
-        title_names = ['Filename', 'Duration(s)', 'Inference Time(s)', 'Model Load Time(s)', 'LM Load Time(s)']
-        print("\n%-30s %-20s %-20s %-20s %s" % (title_names[0], title_names[1], title_names[2], title_names[3], title_names[4]))
+    if args.eml_file is not None:
+        if os.path.isdir(args.eml_file):
+            print("eml_file is directory, infering XML file.")
+            file_list = os.listdir(args.eml_file)
+            for file in file_list:
+                if '.xml' in file:
+                    args.eml_file = os.path.join(args.eml_file, file)
+                    print('using XML file:', args.eml_file)
 
-        inference_time = 0.0
+    if args.audio is None and args.eml_file is not None:
+        args.audio = download_audio(args.eml_file)
 
-        # Run VAD on the input file
-        waveFile = args.audio
-        segments, sample_rate, audio_length = wavTranscriber.vad_segment_generator(waveFile, args.aggressive,
-                                                                                   model_sample_rate=model_retval[3],
-                                                                                   normalize=args.normalize)
-        f = open(waveFile.rstrip(".wav") + ".txt", 'w')
+    if args.audio is None:
+        print("Provide argument audio or eml_file in argument")
+        exit(1)
+
+    if args.eml_file:
+        clean_eml = parse_clean_eml_file(args.eml_file)
+        with open(args.audio.replace(".wav", "_EML.txt"), 'w') as eml_file:
+            for text in clean_eml:
+                eml_file.write(text)
+                eml_file.write('\n')
+
+    title_names = ['Filename', 'Duration(s)', 'Inference Time(s)', 'Model Load Time(s)', 'LM Load Time(s)']
+    print("\n%-30s %-20s %-20s %-20s %s" % (title_names[0], title_names[1], title_names[2], title_names[3], title_names[4]))
+
+    inference_time = 0.0
+
+    # Run VAD on the input file
+    waveFile = args.audio
+    segments, sample_rate, audio_length = wavTranscriber.vad_segment_generator(waveFile, args.aggressive,
+                                                                               model_sample_rate=model_retval[3],
+                                                                               normalize=args.normalize)
+
+    segments = list(segments)
+
+    if args.save_segments:
+        if os.path.isdir("segments"):
+            shutil.rmtree("segments")
+        os.mkdir("segments")
+
+    if args.save_without_pause:
+        whole_audio = b''.join(segments)
+        new_audio_file = waveFile.rstrip(".wav") + "_VAD.wav"
+        with wave.open(new_audio_file, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(model_retval[3])
+            wf.writeframes(whole_audio)
+
+    # save transcript
+    with open(waveFile.rstrip(".wav") + "_DeepSpeech.txt", 'w') as f:
         logging.debug("Saving Transcript @: %s" % waveFile.rstrip(".wav") + ".txt")
-
-        if args.save_segments:
-            if os.path.isdir("chunks"):
-                shutil.rmtree("chunks")
-            os.mkdir("chunks")
         for i, segment in enumerate(segments):
             # Run deepspeech on the chunk that just completed VAD
             logging.debug("Processing chunk %002d" % (i,))
@@ -89,51 +117,20 @@ def main(args):
                     wf.writeframes(segment)
             audio = np.frombuffer(segment, dtype=np.int16)
             output = wavTranscriber.stt(model_retval[0], audio, sample_rate)
+            if not output[0] or output[0] == ' ':
+                continue
             inference_time += output[1]
             logging.debug("Transcript: %s" % output[0])
 
-            f.write(output[0] + " ")
+            f.write(output[0] + "\n")
 
-        if args.save_without_pause:
-            whole_audio = segments[0]
-            for segment in segments[1:]:
-                whole_audio.append(segment)
-            new_audio_file = waveFile.rstrip(".wav") + "_no_pause.wav"
-            with wave.open(new_audio_file, 'wb') as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)
-                wf.setframerate(model_retval[3])
-                wf.writeframes(whole_audio)
-
-        # Summary of the files processed
-        f.close()
-
-        # Extract filename from the full file path
-        filename, ext = os.path.split(os.path.basename(waveFile))
-        logging.debug("************************************************************************************************************")
-        logging.debug("%-30s %-20s %-20s %-20s %s" % (title_names[0], title_names[1], title_names[2], title_names[3], title_names[4]))
-        logging.debug("%-30s %-20.3f %-20.3f %-20.3f %-0.3f" % (filename + ext, audio_length, inference_time, model_retval[1], model_retval[2]))
-        logging.debug("************************************************************************************************************")
-        print("%-30s %-20.3f %-20.3f %-20.3f %-0.3f" % (filename + ext, audio_length, inference_time, model_retval[1], model_retval[2]))
-    else:
-        sctx = model_retval[0].createStream()
-        if os.name == 'nt': # Windows
-            command = 'sox -d -q -V0 -e signed -L -c 1 -b 16 -r 16k -t raw - gain -2'
-        else:
-            command = 'rec -q -V0 -e signed -L -c 1 -b 16 -r 16k -t raw - gain -2'
-        subproc = subprocess.Popen(shlex.split(command),
-                                   stdout=subprocess.PIPE,
-                                   bufsize=0)
-        print('You can start speaking now. Press Control-C to stop recording.')
-
-        try:
-            while True:
-                data = subproc.stdout.read(512)
-                model_retval[0].feedAudioContent(sctx, np.frombuffer(data, np.int16))
-        except KeyboardInterrupt:
-            print('Transcription: ', model_retval[0].finishStream(sctx))
-            subproc.terminate()
-            subproc.wait()
+    # Extract filename from the full file path
+    filename, ext = os.path.split(os.path.basename(waveFile))
+    logging.debug("************************************************************************************************************")
+    logging.debug("%-30s %-20s %-20s %-20s %s" % (title_names[0], title_names[1], title_names[2], title_names[3], title_names[4]))
+    logging.debug("%-30s %-20.3f %-20.3f %-20.3f %-0.3f" % (filename + ext, audio_length, inference_time, model_retval[1], model_retval[2]))
+    logging.debug("************************************************************************************************************")
+    print("%-30s %-20.3f %-20.3f %-20.3f %-0.3f" % (filename + ext, audio_length, inference_time, model_retval[1], model_retval[2]))
 
 
 if __name__ == '__main__':
