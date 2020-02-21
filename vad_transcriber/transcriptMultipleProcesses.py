@@ -156,6 +156,9 @@ def run(pool, use_lm, proc, input_path, model, lm, trie, aggressive, normalize, 
             msg = work_done.get()
             predictions.append(msg['prediction'])
 
+        for process in processes:
+            process.terminate()
+
     runtime = time.time() - start_time
     print("Runtime:", runtime)
     return runtime
@@ -197,10 +200,14 @@ def main():
         proc_array = [1, 5, 10, 15, 20]
         use_pb_array = [True, False]
         runs = 3
+        all_runs_count = len(use_lm_array) * len(proc_array) * len(use_pb_array) * runs
+        count = 0
         for run_no in range(runs):
             for use_lm in use_lm_array:
                 for proc in proc_array:
                     for use_pb in use_pb_array:
+                        print("Run", count, "/", all_runs_count)
+                        count += 1
                         key = (use_lm, proc, use_pb)
                         if key not in results:
                             results[key] = 0
