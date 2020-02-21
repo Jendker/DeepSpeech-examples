@@ -6,6 +6,7 @@ import os
 import logging
 import argparse
 import time
+import pickle
 
 import numpy as np
 import wavTranscriber
@@ -49,10 +50,18 @@ def chunkIt(seq, num):
     return out
 
 
-def pool_worker(model, lm, trie, gpu_mask, aggressive, normalize, file_paths):
+def pool_worker(model, lm, trie, gpu_mask, aggressive, normalize, file_paths, use_lm, use_pb):
     os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_mask)
+    if use_pb:
+        if '.pbmm' in model:
+            model = model[:-2]
+    else:
+        if '.pb' == model[:-3]:
+            model += 'mm'
+
     ds = Model(model, BEAM_WIDTH)
-    ds.enableDecoderWithLM(lm, trie, LM_ALPHA, LM_BETA)
+    if use_lm:
+        ds.enableDecoderWithLM(lm, trie, LM_ALPHA, LM_BETA)
     all_files_output = []
 
     for file_path in file_paths:
@@ -64,10 +73,17 @@ def pool_worker(model, lm, trie, gpu_mask, aggressive, normalize, file_paths):
             print('FileNotFoundError: ', ex)
 
 
-def proc_worker(model, lm, trie, queue_in, queue_out, gpu_mask, aggressive, normalize):
+def proc_worker(model, lm, trie, queue_in, queue_out, gpu_mask, aggressive, normalize, use_lm, use_pb):
     os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_mask)
+    if use_pb:
+        if '.pbmm' in model:
+            model = model[:-2]
+    else:
+        if '.pb' == model[:-3]:
+            model += 'mm'
     ds = Model(model, BEAM_WIDTH)
-    ds.enableDecoderWithLM(lm, trie, LM_ALPHA, LM_BETA)
+    if use_lm:
+        ds.enableDecoderWithLM(lm, trie, LM_ALPHA, LM_BETA)
 
     while True:
         try:
@@ -82,6 +98,67 @@ def proc_worker(model, lm, trie, queue_in, queue_out, gpu_mask, aggressive, norm
 
         print(queue_out.qsize(), end='\r')  # Update the current progress
         queue_in.task_done()
+
+
+def run(pool, use_lm, proc, input_path, model, lm, trie, aggressive, normalize, use_pb):
+    start_time = time.time()
+    if pool:
+        print("Running pool of subprocesses.")
+        with Pool(proc) as pool:
+            all_files = []
+            with open(input_path, 'r') as csvfile:
+                csvreader = csv.DictReader(csvfile)
+                count = 0
+                for row in csvreader:
+                    count += 1
+                    all_files.append(row['filename'])
+
+            split_filenames = chunkIt(all_files, proc)
+            print('Totally %d wav entries found in csv\n' % count)
+            workers_arguments = []
+            for index, process_filenames in enumerate(split_filenames):
+                    workers_arguments.append((model, lm, trie, index, aggressive, normalize, process_filenames, use_lm,
+                                              use_pb))
+            transcripts = pool.starmap(pool_worker, workers_arguments)
+            print('\nTotally %d wav file transcripted' % len(transcripts))
+    else:
+        print("Spawning processes.")
+        manager = Manager()
+        work_todo = JoinableQueue()  # this is where we are going to store input data
+        work_done = manager.Queue()  # this where we are gonna push them out
+
+        processes = []
+        for i in range(proc):
+            worker_process = Process(target=proc_worker, args=(model, lm, trie, work_todo, work_done, i,
+                                                               aggressive, normalize, use_lm, use_pb),
+                                     daemon=True, name='worker_process_{}'.format(i))
+            worker_process.start()  # Launch reader() as a separate python process
+            processes.append(worker_process)
+
+        print([x.name for x in processes])
+
+        predictions = []
+        wav_filenames = []
+
+        with open(input_path, 'r') as csvfile:
+            csvreader = csv.DictReader(csvfile)
+            count = 0
+            for row in csvreader:
+                count += 1
+                work_todo.put({'filename': row['filename']})
+                wav_filenames.extend(row['filename'])
+
+        print('Totally %d wav entries found in csv\n' % count)
+        work_todo.join()
+        print('\nTotally %d wav file transcripted' % work_done.qsize())
+
+        while not work_done.empty():
+            msg = work_done.get()
+            predictions.append(msg['prediction'])
+
+    runtime = time.time() - start_time
+    print("Runtime:", runtime)
+    return runtime
 
 
 def main():
@@ -100,68 +177,49 @@ def main():
                         help='Number of processes to spawn, defaulting to number of CPUs')
     parser.add_argument('--normalize', dest='normalize', action='store_true')
     parser.add_argument('--no_normalize', dest='normalize', action='store_false')
+    parser.add_argument('--use_lm', dest='use_lm', action='store_true')
+    parser.add_argument('--no_use_lm', dest='use_lm', action='store_false')
+    parser.add_argument('--use_pb', dest='use_pb', action='store_true')
+    parser.add_argument('--no_use_pb', dest='use_pb', action='store_false')
     parser.add_argument('--pool', action='store_true',
                         help='Use subprocess pool instead of process spawning. There is no big difference between both.')
+    parser.add_argument('--benchmark', action='store_true',
+                        help='Perform the benchmark')
     parser.set_defaults(normalize=True)
+    parser.set_defaults(use_lm=True)
+    parser.set_defaults(use_pb=True)
     args = parser.parse_args()
 
-    start_time = time.time()
+    if args.benchmark:
+        print("Running benchmark")
+        results = {}
+        use_lm_array = [True]
+        proc_array = [1, 5, 10, 15, 20]
+        use_pb_array = [True, False]
+        runs = 3
+        for run_no in range(runs):
+            for use_lm in use_lm_array:
+                for proc in proc_array:
+                    for use_pb in use_pb_array:
+                        key = (use_lm, proc, use_pb)
+                        if key not in results:
+                            results[key] = 0
+                        this_run_time = run(pool=args.pool, use_lm=use_lm, proc=proc,
+                                           input_path=args.input_path, model=args.model,
+                            lm=args.lm, trie=args.trie, aggressive=args.aggressive, normalize=args.normalize,
+                            use_pb=use_pb)
+                        results[key] = results[key] + (this_run_time - results[key]) / (run_no + 1)
 
-    if args.pool:
-        print("Running pool of subprocesses.")
-        with Pool(args.proc) as pool:
-            all_files = []
-            with open(args.input_path, 'r') as csvfile:
-                csvreader = csv.DictReader(csvfile)
-                count = 0
-                for row in csvreader:
-                    count += 1
-                    all_files.append(row['filename'])
+        print("Job finished")
+        with open('results.pickle', 'wb') as handle:
+            pickle.dump(results, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
-            split_filenames = chunkIt(all_files, args.proc)
-            print('Totally %d wav entries found in csv\n' % count)
-            workers_arguments = []
-            for index, process_filenames in enumerate(split_filenames):
-                    workers_arguments.append((args.model, args.lm, args.trie, index, args.aggressive, args.normalize, process_filenames))
-            transcripts = pool.starmap(pool_worker, workers_arguments)
-            print('\nTotally %d wav file transcripted' % len(transcripts))
+        # with open('filename.pickle', 'rb') as handle:
+        #     b = pickle.load(handle)
+
     else:
-        print("Spawning processes.")
-        manager = Manager()
-        work_todo = JoinableQueue()  # this is where we are going to store input data
-        work_done = manager.Queue()  # this where we are gonna push them out
-
-        processes = []
-        for i in range(args.proc):
-            worker_process = Process(target=proc_worker, args=(args.model, args.lm, args.trie, work_todo, work_done, i,
-                                                               args.aggressive, args.normalize),
-                                     daemon=True, name='worker_process_{}'.format(i))
-            worker_process.start()  # Launch reader() as a separate python process
-            processes.append(worker_process)
-
-        print([x.name for x in processes])
-
-        predictions = []
-        wav_filenames = []
-
-        with open(args.input_path, 'r') as csvfile:
-            csvreader = csv.DictReader(csvfile)
-            count = 0
-            for row in csvreader:
-                count += 1
-                work_todo.put({'filename': row['filename']})
-                wav_filenames.extend(row['filename'])
-
-        print('Totally %d wav entries found in csv\n' % count)
-        work_todo.join()
-        print('\nTotally %d wav file transcripted' % work_done.qsize())
-
-        while not work_done.empty():
-            msg = work_done.get()
-            predictions.append(msg['prediction'])
-
-    print("Runtime:", time.time() - start_time)
-
+        run(args.pool, args.use_lm, args.proc, args.input_path, args.model, args.lm,
+            args.trie, args.aggressive, args.normalize, args.use_pb)
 
 if __name__ == '__main__':
     main()
